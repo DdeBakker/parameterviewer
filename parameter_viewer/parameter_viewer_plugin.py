@@ -35,6 +35,8 @@ class BodemkwaliteitNormen:
             'Minerale olie': {'Landbouw/Natuur': 190, 'Wonen': 1900, 'Industrie': 1900, 'Matig Verontreinigd': 2950, 'Sterk Verontreinigd': 5900},
             'Asbest': {'Landbouw/Natuur': 0, 'Wonen': 100, 'Industrie': 100, 'Matig Verontreinigd': 5050, 'Sterk Verontreinigd': 10100},
             'Kobalt': {'Landbouw/Natuur': 15, 'Wonen': 35, 'Industrie': 190, 'Matig Verontreinigd': 190, 'Sterk Verontreinigd': 190},
+            'Cyanide (vrij)': {'Landbouw/Natuur': 3.0, 'Wonen': 3.0, 'Industrie': 20, 'Matig Verontreinigd': 20, 'Sterk Verontreinigd': 20},
+            'Cyanide (complex, pH onbelangrijk)': {'Landbouw/Natuur': 5.5, 'Wonen': 5.5, 'Industrie': 50, 'Matig Verontreinigd': 50, 'Sterk Verontreinigd': 50},
         }
         self.parameter_aliases = {
             'As': 'Arseen','Cd': 'Cadmium','Cr': 'Chroom','Cu': 'Koper','Hg': 'Kwik','Pb': 'Lood',
@@ -73,7 +75,7 @@ class BodemkwaliteitNormen:
             'Di-isobutylftalaat': 17000, 'Dimethylftalaat': 82000, 'Minerale olie (totaal)': 5000,
             'Pyridine': 11, 'Tetrahydrofuraan': 7, 'Tetrahydrothiofeen': 8.8, 'PAK (som 10)': 40
         }
-
+    
     def get_kwaliteitsklasse(self, parameter_name, waarde):
         try:
             waarde = float(waarde)
