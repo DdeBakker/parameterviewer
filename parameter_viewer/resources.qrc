@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/plugins/parameter_viewer" >
+        <file>icon.png</file>
+    </qresource>
+</RCC>
