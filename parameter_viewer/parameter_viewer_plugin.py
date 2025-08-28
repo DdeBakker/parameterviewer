@@ -168,9 +168,9 @@ class ParameterViewer:
             layer_name = layer.name()
             
             if "T101" in layer_name:
-                report_title = "Rapport Bodemkwaliteit: Partijafvoer T101"
+                report_title = "Rapport Bodemkwaliteit: T101"
             elif "T130" in layer_name:
-                report_title = "Rapport Bodemkwaliteit: Partijafvoer T130"
+                report_title = "Rapport Bodemkwaliteit: T130"
                 is_t130_layer = True
 
             # Voeg 'AnalysisSampleName' toe aan de lijst van vereiste velden
