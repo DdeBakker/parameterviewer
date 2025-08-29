@@ -1,8 +1,8 @@
 import os
-from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication
-from qgis.PyQt.QtGui import QIcon
+from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, QVariant
+from qgis.PyQt.QtGui import QIcon, QColor
 from qgis.PyQt.QtWidgets import QAction, QMessageBox, QDialog, QVBoxLayout, QTextEdit, QPushButton, QComboBox, QHBoxLayout, QLabel, QLineEdit, QGroupBox
-from qgis.core import QgsProject, QgsVectorLayer
+from qgis.core import QgsProject, QgsVectorLayer, QgsField, QgsFeature, QgsSymbol, QgsCategorizedSymbolRenderer, QgsRendererCategory
 
 
 class BodemkwaliteitNormen:
@@ -210,90 +210,96 @@ class ParameterViewer:
                 'p,p-ddd', 'p,p-dde', 'p,p-ddt'
             }
             
+            # Definieer de hiërarchie van klassen met numerieke prioriteit
+            # Hogere waarde = hogere prioriteit
+            class_priority = {
+                'Onbekend': 0,
+                'Fysische Parameter': 1,
+                'Geen Norm': 2,
+                'Zorgplicht': 3,
+                'Landbouw/Natuur': 4,
+                'Kleiner dan gelijk aan interventiewaarde': 5,
+                'Wonen': 6,
+                'Industrie': 7,
+                'Matig Verontreinigd': 8,
+                'Sterk Verontreinigd': 9,
+                'Groter dan interventiewaarde': 10
+            }
+            
             # Aangepast naar een lijst om alle features te behouden, zelfs met identieke meetpunt-parameter combinaties
             classifications = []
             field_indices = {f.name(): i for i, f in enumerate(layer.fields())}
             
+            # Groepeer features per meetpunt
+            grouped_features = {}
             for feat in layer.getFeatures():
                 mp = feat.attributes()[field_indices["MeasurementPointName"]] if "MeasurementPointName" in field_indices else "Unknown"
-                pn = feat.attributes()[field_indices["ParameterName"]] if "ParameterName" in field_indices else "Unknown"
-                val = feat.attributes()[field_indices["ParameterMeasuredValue"]] if "ParameterMeasuredValue" in field_indices else None
-                unit = feat.attributes()[field_indices["ParameterUnit"]] if "ParameterUnit" in field_indices else ""
-                jar_from = feat.attributes()[field_indices["JarFrom"]] if "JarFrom" in field_indices else "Onbekend"
-                jar_to = feat.attributes()[field_indices["JarTo"]] if "JarTo" in field_indices else "Onbekend"
-                # Haal de AnalysisSampleName op
-                asn = feat.attributes()[field_indices["AnalysisSampleName"]] if "AnalysisSampleName" in field_indices else "Onbekend"
-                
-                # Sla de PAK-parameters over die uitgesloten moeten worden
-                if pn.lower().strip() in pak_substances_to_exclude:
-                    continue
-                
-                # Controleer op fysische parameters
-                if pn.lower().strip() in physical_substances:
-                    if val is not None:
-                        classifications.append({
-                            'measurement_point': mp,
-                            'analysis_sample_name': asn,
-                            'parameter': pn,
-                            'value': val,
-                            'unit': unit,
-                            'class': 'Fysische Parameter',
-                            'description': 'Fysische parameter zonder normwaarde',
-                            'jar_from': jar_from,
-                            'jar_to': jar_to
-                        })
-                    continue # Ga door naar de volgende feature
-                
-                # Controleer op stoffen met zorgplicht
-                if pn.strip() in zorgplicht_substances:
-                    if val is not None:
-                        classifications.append({
-                            'measurement_point': mp,
-                            'analysis_sample_name': asn,
-                            'parameter': pn,
-                            'value': val,
-                            'unit': unit,
-                            'class': 'Zorgplicht',
-                            'description': 'Zorgplicht van toepassing: zowel bij ontbrekende normwaarde als bij ontbrekend IW.',
-                            'jar_from': jar_from,
-                            'jar_to': jar_to
-                        })
-                    continue # Ga door naar de volgende feature
+                if mp not in grouped_features:
+                    grouped_features[mp] = {'features': [], 'geometry': feat.geometry()}
+                grouped_features[mp]['features'].append(feat)
 
-                # Classificeer de overige parameters en voeg ze toe aan de lijst
-                if val is not None:
-                    # Eerst de speciale case voor somparameters controleren
-                    if pn.lower().strip() in som_parameters_for_description:
-                        classifications.append({
-                            'measurement_point': mp,
-                            'analysis_sample_name': asn,
-                            'parameter': pn,
-                            'value': val,
-                            'unit': unit,
-                            'class': 'Geen Norm',
-                            'description': "Deze stof heeft geen norm opzichzelf deze wordt gebruik ten calculatie van of PCB's (Som 7) of PAK's (Som 10)",
-                            'jar_from': jar_from,
-                            'jar_to': jar_to
-                        })
-                    # Nieuwe logica voor T130-laag
-                    elif is_t130_layer:
-                        # Haal de normnaam op via de alias, en controleer de interventiewaarde
-                        norm_param_t130 = self.measurement_widget.bodem_normen.parameter_aliases.get(pn, pn)
-                        if norm_param_t130 in self.measurement_widget.bodem_normen.interventiewaardes_t130:
-                            interventiewaarde = self.measurement_widget.bodem_normen.interventiewaardes_t130[norm_param_t130]
-                            if float(val) > float(interventiewaarde):
-                                klasse = 'Groter dan interventiewaarde'
-                                toel = f'De waarde ({val}) is groter dan de interventiewaarde van {interventiewaarde}.'
+            # --- START: New logic for layer visualization ---
+            crs = layer.crs().authid()
+            classified_layer = QgsVectorLayer(f"Point?crs={crs}", "Bodemkwaliteit Klassificatie", "memory")
+            if not classified_layer.isValid():
+                QMessageBox.critical(self.iface.mainWindow(), "Fout", "Kon geen nieuwe laag creëren.")
+                return
+
+            classified_layer_provider = classified_layer.dataProvider()
+            classified_layer_provider.addAttributes([QgsField("Classification", QVariant.String)])
+            classified_layer.updateFields()
+
+            classified_features = []
+            
+            for mp, data in grouped_features.items():
+                highest_class = 'Onbekend'
+                
+                # Bepaal de hoogste klasse voor het meetpunt
+                for feat in data['features']:
+                    pn = feat.attributes()[field_indices["ParameterName"]] if "ParameterName" in field_indices else "Unknown"
+                    val = feat.attributes()[field_indices["ParameterMeasuredValue"]] if "ParameterMeasuredValue" in field_indices else None
+                    unit = feat.attributes()[field_indices["ParameterUnit"]] if "ParameterUnit" in field_indices else ""
+                    jar_from = feat.attributes()[field_indices["JarFrom"]] if "JarFrom" in field_indices else "Onbekend"
+                    jar_to = feat.attributes()[field_indices["JarTo"]] if "JarTo" in field_indices else "Onbekend"
+                    asn = feat.attributes()[field_indices["AnalysisSampleName"]] if "AnalysisSampleName" in field_indices else "Onbekend"
+                    
+                    if pn.lower().strip() in pak_substances_to_exclude:
+                        continue
+                    
+                    current_class = "Onbekend"
+                    toel = ""
+                    
+                    if pn.lower().strip() in physical_substances:
+                        if val is not None:
+                            current_class = 'Fysische Parameter'
+                            toel = 'Fysische parameter zonder normwaarde'
+                    elif pn.strip() in zorgplicht_substances:
+                        if val is not None:
+                            current_class = 'Zorgplicht'
+                            toel = 'Zorgplicht van toepassing: zowel bij ontbrekende normwaarde als bij ontbrekend IW.'
+                    elif val is not None:
+                        if pn.lower().strip() in som_parameters_for_description:
+                            current_class = 'Geen Norm'
+                            toel = "Deze stof heeft geen norm opzichzelf deze wordt gebruik ten calculatie van of PCB's (Som 7) of PAK's (Som 10)"
+                        elif is_t130_layer:
+                            norm_param_t130 = self.measurement_widget.bodem_normen.parameter_aliases.get(pn, pn)
+                            if norm_param_t130 in self.measurement_widget.bodem_normen.interventiewaardes_t130:
+                                interventiewaarde = self.measurement_widget.bodem_normen.interventiewaardes_t130[norm_param_t130]
+                                if float(val) > float(interventiewaarde):
+                                    current_class = 'Groter dan interventiewaarde'
+                                    toel = f'De waarde ({val}) is groter dan de interventiewaarde van {interventiewaarde}.'
+                                else:
+                                    current_class = 'Kleiner dan gelijk aan interventiewaarde'
+                                    toel = f'De waarde ({val}) is kleiner dan of gelijk aan de interventiewaarde van {interventiewaarde}.'
                             else:
-                                klasse = 'Kleiner dan gelijk aan interventiewaarde'
-                                toel = f'De waarde ({val}) is kleiner dan of gelijk aan de interventiewaarde van {interventiewaarde}.'
+                                current_class = 'Geen Norm'
+                                toel = 'Deze parameter heeft geen interventiewaarde.'
                         else:
-                            # Standaard classificatie voor T130, als de parameter geen IW heeft
-                            klasse = 'Geen Norm'
-                            toel = 'Deze parameter heeft geen interventiewaarde.'
-                    else:
-                        # Standaard classificatielogica voor andere lagen
-                        klasse, _, toel = self.measurement_widget.bodem_normen.get_kwaliteitsklasse(pn, val)
+                            current_class, _, toel = self.measurement_widget.bodem_normen.get_kwaliteitsklasse(pn, val)
+                    
+                    # Vergelijk de huidige klasse met de hoogste klasse tot nu toe
+                    if class_priority.get(current_class, 0) > class_priority.get(highest_class, 0):
+                        highest_class = current_class
                     
                     classifications.append({
                         'measurement_point': mp,
@@ -301,18 +307,70 @@ class ParameterViewer:
                         'parameter': pn,
                         'value': val,
                         'unit': unit,
-                        'class': klasse,
+                        'class': current_class,
                         'description': toel,
                         'jar_from': jar_from,
                         'jar_to': jar_to
                     })
+                
+                # Voeg nu één feature toe per meetpunt met de hoogste klasse, tenzij het een 'niet-relevante' klasse is.
+                if highest_class not in ['Onbekend', 'Fysische Parameter', 'Geen Norm']:
+                    new_feature = QgsFeature()
+                    new_feature.setGeometry(data['geometry'])
+                    new_feature.setAttributes([highest_class])
+                    classified_features.append(new_feature)
 
             if not classifications:
                 QMessageBox.warning(self.iface.mainWindow(),"No Data","No parameter data found"); return
 
+            if not classified_features:
+                QMessageBox.warning(self.iface.mainWindow(), "Geen gegevens", "Geen parametergegevens gevonden voor classificatie.")
+                return
+
+            classified_layer_provider.addFeatures(classified_features)
+
+            target_field = "Classification"
+            # Define all possible categories to ensure a consistent legend
+            if is_t130_layer:
+                all_possible_classes = ['Kleiner dan gelijk aan interventiewaarde', 'Groter dan interventiewaarde', 'Zorgplicht']
+            else:
+                all_possible_classes = ['Landbouw/Natuur', 'Wonen', 'Industrie', 'Matig Verontreinigd', 'Sterk Verontreinigd', 'Zorgplicht']
+
+            # Add other classes to show their legends regardless of whether they are present in the data
+            all_possible_classes.extend(['Fysische Parameter', 'Geen Norm'])
+            
+            color_map = {
+                'Landbouw/Natuur': '#00aa00',
+                'Wonen': '#ffdd00',
+                'Industrie': '#ff8800',
+                'Matig Verontreinigd': '#ff0000',
+                'Sterk Verontreinigd': '#6600cc',
+                'Groter dan interventiewaarde': '#ff0000',
+                'Kleiner dan gelijk aan interventiewaarde': '#00aa00',
+                'Zorgplicht': '#0000ff',
+                'Fysische Parameter': '#999999',
+                'Geen Norm': '#000000',
+                'Onbekend': '#999999'
+            }
+
+            renderer = QgsCategorizedSymbolRenderer(target_field)
+            
+            # Loop through the list of all possible classes to create the symbology
+            for class_name in all_possible_classes:
+                color = color_map.get(class_name, '#999999')
+                symbol = QgsSymbol.defaultSymbol(classified_layer.geometryType())
+                symbol.setColor(QColor(color))
+                category = QgsRendererCategory(class_name, symbol, class_name)
+                renderer.addCategory(category)
+            
+            classified_layer.setRenderer(renderer)
+            QgsProject.instance().addMapLayer(classified_layer)
+            self.iface.zoomToActiveLayer()
+            QMessageBox.information(self.iface.mainWindow(), "Succes", "Geklassificeerde laag is aan de kaart toegevoegd.")
+
             # Bijgewerkte kleurenmap met rood/witte symbolen
             kleuren_map={'Landbouw/Natuur':'🟢','Wonen':'🟡','Industrie':'🟠','Matig Verontreinigd':'🔴','Sterk Verontreinigd':'🟣',
-                         'Zorgplicht':'🔵', 'Fysische Parameter':'🟫', 'Geen Norm':'⚫', 
+                         'Zorgplicht':'🔵', 'Fysische Parameter':'⚪', 'Geen Norm':'⚫', 
                          'Groter dan interventiewaarde': '🔴', 'Kleiner dan gelijk aan interventiewaarde': '🟢', 'Onbekend':'?', 'Error':'⚠️'}
             
             # Create the dialog with filter and sort options
@@ -469,7 +527,7 @@ class ParameterViewer:
                     sorted_list = sorted(filtered_classifications, key=lambda x: (x['parameter'], x['measurement_point']))
                     
                     for info in sorted_list:
-                        icoon = kleuren_map.get(info['class'], '⚪')
+                        icoon = kleuren_map.get(info['class'], '⚫')
                         report += f"  Meetpunt: {info['measurement_point']}\n"
                         report += f"  Analysenaam: {info['analysis_sample_name']}\n"
                         report += f"  Parameter: {info['parameter']}\n"
@@ -486,7 +544,7 @@ class ParameterViewer:
                     for mp in sorted(meetpunten.keys()):
                         report += f"MEETPUNT: {mp}\n" + "-" * 30 + "\n"
                         for info in sorted(meetpunten[mp], key=lambda x: x['analysis_sample_name']):
-                            icoon = kleuren_map.get(info['class'], '⚪')
+                            icoon = kleuren_map.get(info['class'], '⚫')
                             report += f"  Analysenaam: {info['analysis_sample_name']}\n"
                             report += f"  Parameter: {info['parameter']}\n"
                             report += f"    Waarde: {info['value']} {info['unit']}\n"
@@ -503,7 +561,7 @@ class ParameterViewer:
                     for mp in sorted(meetpunten.keys()):
                         report += f"MEETPUNT: {mp}\n" + "-" * 30 + "\n"
                         for info in sorted(meetpunten[mp], key=lambda x: x['parameter']):
-                            icoon = kleuren_map.get(info['class'], '⚪')
+                            icoon = kleuren_map.get(info['class'], '⚫')
                             report += f"  {info['parameter']}:\n"
                             report += f"    Analysenaam: {info['analysis_sample_name']}\n"
                             report += f"    Waarde: {info['value']} {info['unit']}\n"
