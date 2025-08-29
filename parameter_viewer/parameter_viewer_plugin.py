@@ -1,9 +1,9 @@
 import os
 from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, QVariant
-from qgis.PyQt.QtGui import QIcon, QColor
+from qgis.PyQt.QtGui import QIcon, QColor, QFont
 from qgis.PyQt.QtWidgets import QAction, QMessageBox, QDialog, QVBoxLayout, QTextEdit, QPushButton, QComboBox, QHBoxLayout, QLabel, QLineEdit, QGroupBox
-from qgis.core import QgsProject, QgsVectorLayer, QgsField, QgsFeature, QgsSymbol, QgsCategorizedSymbolRenderer, QgsRendererCategory
-
+from qgis.core import QgsProject, QgsVectorLayer, QgsField, QgsFeature, QgsSymbol, QgsCategorizedSymbolRenderer, QgsRendererCategory, QgsPalLayerSettings, QgsVectorLayerSimpleLabeling
+from qgis.core import QgsTextFormat, QgsTextBufferSettings
 
 class BodemkwaliteitNormen:
     """
@@ -246,7 +246,8 @@ class ParameterViewer:
                 return
 
             classified_layer_provider = classified_layer.dataProvider()
-            classified_layer_provider.addAttributes([QgsField("Classification", QVariant.String)])
+            # Add both Classification and MeasurementPointName fields
+            classified_layer_provider.addAttributes([QgsField("Classification", QVariant.String), QgsField("MeasurementPointName", QVariant.String)])
             classified_layer.updateFields()
 
             classified_features = []
@@ -317,7 +318,7 @@ class ParameterViewer:
                 if highest_class not in ['Onbekend', 'Fysische Parameter', 'Geen Norm']:
                     new_feature = QgsFeature()
                     new_feature.setGeometry(data['geometry'])
-                    new_feature.setAttributes([highest_class])
+                    new_feature.setAttributes([highest_class, mp])
                     classified_features.append(new_feature)
 
             if not classifications:
@@ -364,6 +365,35 @@ class ParameterViewer:
                 renderer.addCategory(category)
             
             classified_layer.setRenderer(renderer)
+            
+            # --- START: Labeling Configuration ---
+            label_settings = QgsPalLayerSettings()
+            label_settings.enabled = True
+            label_settings.fieldName = "MeasurementPointName"
+            
+            text_format = QgsTextFormat()
+            font = QFont()
+            font.setPointSize(8)
+            font.setBold(True)
+            text_format.setFont(font)
+            text_format.setColor(QColor("black"))
+            
+            # Optional: Add a text buffer (halo) for better readability
+            buffer_settings = QgsTextBufferSettings()
+            buffer_settings.setEnabled(True)
+            buffer_settings.setColor(QColor("white"))
+            buffer_settings.setSize(1.0)
+            text_format.setBuffer(buffer_settings)
+            
+            label_settings.setFormat(text_format)
+            
+            # Create a labeling object and apply the settings
+            labeling = QgsVectorLayerSimpleLabeling(label_settings)
+            classified_layer.setLabeling(labeling)
+            classified_layer.setLabelsEnabled(True)
+            
+            # --- END: Labeling Configuration ---
+            
             QgsProject.instance().addMapLayer(classified_layer)
             self.iface.zoomToActiveLayer()
             QMessageBox.information(self.iface.mainWindow(), "Succes", "Geklassificeerde laag is aan de kaart toegevoegd.")
